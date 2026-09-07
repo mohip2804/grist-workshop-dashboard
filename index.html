@@ -1,0 +1,831 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hours taken against hours allowed</title>
+<!--
+  The WHOLE dashboard, as one Grist custom widget.
+
+  Built this way on purpose. Eleven native widgets gave eleven cramped boxes
+  with eleven scrollbars; the page is meant to be read top to bottom as one
+  thing, and only a single widget can lay it out that way.
+
+  It reads Jobs, Assignments and Operators raw and does every calculation in
+  here. It deliberately does NOT depend on the dash* formula columns: those
+  live in the document, outside git, and the next `npm run provision` may well
+  remove them. This file keeps working either way.
+
+  Column naming differs between documents -- one calls a stint's minutes
+  `minutes`, another `Actual_Hour` -- so nothing reads either. Minutes are
+  recomputed from the raw timestamps.
+
+  Needs `full` access, because a widget is scoped to one table otherwise and
+  this reads three. It never writes.
+
+  NO HOST IS NAMED IN THIS FILE. The plugin API is loaded from whichever Grist
+  is showing the widget, worked out at runtime from the frame's parent. That
+  keeps a customer's hostname out of a file that may sit on a public host, and
+  as a side effect the same file drops into any Grist instance unchanged.
+-->
+<style>
+:root{
+  --ink:    var(--grist-theme-text, #16191c);
+  --ink-2:  var(--grist-theme-text-light, #5d666f);
+  --ink-3:  #8b949d;
+  --bg:     var(--grist-theme-page-bg, #ffffff);
+  --panel:  var(--grist-theme-page-panels-main-panel-bg, #ffffff);
+  --sunk:   #f4f6f7;
+  --line:   var(--grist-theme-table-body-border, #e2e6e9);
+  --rule:   #cdd3d8;
+  --std:    #2a78d6;
+  --act:    #eb6834;
+  --raw:    #c3cad1;
+  --eff:    #0ca30c;
+  --good:   #036903;
+  --warn:   #7a5a05;
+  --bad:    #8f2020;
+  --calm:   #17457f;
+  --w-good: rgba(12,163,12,.10);
+  --w-warn: rgba(250,178,25,.20);
+  --w-over: rgba(236,131,90,.20);
+  --w-bad:  rgba(208,59,59,.13);
+  --w-calm: rgba(37,106,191,.10);
+  --w-mute: rgba(139,148,157,.14);
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --ink:#f0f2f4; --ink-2:#b6bec6; --ink-3:#7d868f;
+    --bg:#1c1f22; --panel:#1c1f22; --sunk:#24282c;
+    --line:#33383d; --rule:#414850;
+    --std:#3987e5; --act:#d95926; --raw:#4a5158;
+    --good:#3fbf3f; --warn:#d6a72a; --bad:#e56b6b; --calm:#6fa8e8;
+    --w-good:rgba(12,163,12,.18); --w-warn:rgba(250,178,25,.20);
+    --w-over:rgba(236,131,90,.20); --w-bad:rgba(208,59,59,.22);
+    --w-calm:rgba(57,135,229,.18); --w-mute:rgba(139,148,157,.18);
+  }
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{
+  background:var(--bg); color:var(--ink); overflow-y:auto;
+  font:13.5px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1240px;margin:0 auto;padding:16px 18px 40px;display:flex;flex-direction:column;gap:18px}
+
+/* ---------- header ---------- */
+.top{display:flex;flex-wrap:wrap;gap:12px 24px;align-items:flex-end;justify-content:space-between;
+     border-bottom:2px solid var(--ink);padding-bottom:12px}
+.eyebrow{font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3);font-weight:600}
+h1{font-size:23px;line-height:1.1;margin:3px 0 0;font-weight:660;letter-spacing:-.01em}
+.showing{color:var(--ink-2);font-size:12.5px;margin:3px 0 0}
+.pickers{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.seg{display:inline-flex;border:1px solid var(--rule);border-radius:5px;overflow:hidden;background:var(--panel)}
+.seg button{appearance:none;border:0;background:transparent;cursor:pointer;padding:5px 11px;
+  font:inherit;font-size:12px;font-weight:550;color:var(--ink-2);border-right:1px solid var(--line)}
+.seg button:last-child{border-right:0}
+.seg button[aria-pressed="true"]{background:var(--ink);color:var(--bg)}
+.seg button:focus-visible{outline:2px solid var(--std);outline-offset:-2px}
+select{font:inherit;font-size:12px;padding:5px 8px;border:1px solid var(--rule);border-radius:5px;
+  background:var(--panel);color:var(--ink);max-width:190px}
+
+/* ---------- health ---------- */
+.health{border:1px solid var(--line);border-radius:6px;overflow:hidden;background:var(--panel)}
+.hgrid{display:grid;gap:1px;background:var(--line);grid-template-columns:repeat(auto-fit,minmax(108px,1fr))}
+.hcell{background:var(--panel);padding:8px 11px 9px;display:flex;flex-direction:column;gap:0}
+.hk{font-size:9.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--ink-3);white-space:nowrap;
+    overflow:hidden;text-overflow:ellipsis}
+.hv{font-size:21px;font-weight:660;line-height:1.15;font-variant-numeric:tabular-nums}
+.hv.good{color:var(--good)}.hv.warn{color:var(--warn)}.hv.bad{color:var(--bad)}.hv.calm{color:var(--calm)}
+.hlede{padding:8px 11px;border-top:1px solid var(--line);color:var(--ink-2);font-size:12px;background:var(--sunk)}
+.hlede b{color:var(--ink)} .hlede .bad{color:var(--bad);font-weight:600}
+
+/* ---------- sections ---------- */
+section{display:flex;flex-direction:column;gap:9px}
+h2{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3);
+   font-weight:660;margin:0;padding-bottom:5px;border-bottom:1px solid var(--line)}
+.sub{color:var(--ink-2);font-size:12px;margin:0}
+.cols{display:grid;gap:16px;grid-template-columns:1fr}
+@media (min-width:900px){ .cols.two{grid-template-columns:minmax(0,1.25fr) minmax(0,1fr)} }
+
+/* ---------- tables ---------- */
+.tw{overflow-x:auto;border:1px solid var(--line);border-radius:6px;background:var(--panel)}
+table{border-collapse:collapse;width:100%;font-size:12.5px}
+th{position:sticky;top:0;background:var(--panel);text-align:left;white-space:nowrap;
+   padding:8px 10px;font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;
+   color:var(--ink-3);font-weight:660;border-bottom:1.5px solid var(--rule)}
+td{padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:baseline}
+tr:last-child td{border-bottom:0}
+th.n,td.n{text-align:right;font-variant-numeric:tabular-nums}
+tbody tr.sel td{background:var(--w-calm)}
+tbody tr.click{cursor:pointer}
+tbody tr.click:hover td{background:var(--sunk)}
+.reg{font-weight:660;letter-spacing:.01em}
+.sub2{display:block;font-size:10.5px;color:var(--ink-3);font-variant-numeric:tabular-nums}
+.pill{display:inline-block;padding:1px 8px 2px;border-radius:999px;font-size:10.5px;
+      font-weight:600;white-space:nowrap;letter-spacing:.02em}
+.p-on{background:var(--w-good);color:var(--good)}
+.p-under{background:var(--w-calm);color:var(--calm)}
+.p-watch{background:var(--w-warn);color:var(--ink)}
+.p-over{background:var(--w-over);color:var(--ink)}
+.p-crit{background:var(--w-bad);color:var(--bad)}
+.p-mute{background:var(--w-mute);color:var(--ink-2)}
+.pos{color:var(--bad);font-weight:600}.neg{color:var(--good);font-weight:600}
+.dash{color:var(--ink-3)}
+.empty{padding:18px 12px;color:var(--ink-3);font-size:12.5px;text-align:center}
+
+/* ---------- charts ---------- */
+.chart{border:1px solid var(--line);border-radius:6px;background:var(--panel);padding:10px 4px 4px;overflow-x:auto}
+svg{display:block}
+svg text{fill:var(--ink-2);font-size:10px;font-family:inherit}
+svg text.cat{fill:var(--ink);font-size:11px;font-weight:600}
+svg text.val{font-size:10px;font-variant-numeric:tabular-nums}
+.gl{stroke:var(--line);stroke-width:1}
+.legend{display:flex;gap:14px;flex-wrap:wrap;color:var(--ink-2);font-size:11.5px;padding:0 10px 6px}
+.key{display:inline-flex;align-items:center;gap:6px}
+.sw{width:11px;height:11px;border-radius:2px;flex:none}
+.sw.ln{height:3px;width:15px}
+footer{color:var(--ink-3);font-size:11.5px;border-top:1px solid var(--line);padding-top:10px}
+.err{margin:18px;padding:12px 14px;border:1px solid var(--bad);border-radius:6px;
+     color:var(--bad);font-size:13px;background:var(--w-bad)}
+</style>
+</head>
+<body>
+<div class="wrap" id="app"><div class="empty">Loading…</div></div>
+
+<script>
+"use strict";
+
+/* ============================ helpers ============================ */
+var IST_OFFSET = 5.5 * 3600 * 1000;
+var h1 = function (n) { return (Math.round(n * 10) / 10).toFixed(1); };
+var pctTxt = function (n) { return (n > 0 ? "+" : "") + Math.round(n) + "%"; };
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+  });
+}
+/** The IST calendar day a timestamp falls on, as YYYY-MM-DD. */
+function istDay(ms) {
+  return new Date(ms + IST_OFFSET).toISOString().slice(0, 10);
+}
+function parseTs(s) {
+  if (!s) return null;
+  var t = Date.parse(s);
+  return isFinite(t) ? t : null;
+}
+function fmtDay(key) {
+  var d = new Date(key + "T00:00:00Z");
+  return d.toLocaleDateString("en-GB", { weekday: "short", day: "2-digit", month: "short", timeZone: "UTC" });
+}
+function fmtMonth(key) {
+  var d = new Date(key + "-01T00:00:00Z");
+  return d.toLocaleDateString("en-GB", { month: "short", year: "numeric", timeZone: "UTC" });
+}
+function fmtTime(ms) {
+  if (!ms) return "—";
+  return new Date(ms + IST_OFFSET).toISOString().slice(11, 16);
+}
+/** Grist returns tables column-wise; the rest of this file wants rows. */
+function toRows(t) {
+  if (!t || !t.id) return [];
+  return t.id.map(function (id, i) {
+    var r = { id: id };
+    for (var k in t) if (k !== "id") r[k] = t[k][i];
+    return r;
+  });
+}
+
+/* ======================= the domain rules =======================
+   Deliberately duplicated here rather than read from the document's
+   dash* columns: those live outside git and a provisioning run can
+   remove them. Same rules, stated once, in one place.                */
+var MAX_STINT_MIN = 12 * 60;   // longer than a shift is wall time, not work
+var MAX_STD_HOURS = 24;        // above this the portal sent a rupee amount
+var MIN_PROGRESS  = 0.25;      // below a quarter booked, nothing to compare
+
+function build(raw) {
+  var now = Date.now();
+  var ops = {}, opList = [];
+  raw.operators.forEach(function (o) {
+    var rec = { uid: o.uid, code: o.externalId || "", name: o.name || o.uid,
+                active: o.Active !== false };
+    ops[o.uid] = rec; opList.push(rec);
+  });
+
+  var jobs = {}, jobList = [];
+  raw.jobs.forEach(function (j) {
+    var std = (j.effectiveAllottedMinutes != null ? j.effectiveAllottedMinutes
+              : (j.allottedMinutesOverride != null ? j.allottedMinutesOverride
+                 : j.allottedMinutes)) || 0;
+    var rec = {
+      uid: j.uid, card: j.externalId || "", reg: j.subjectLabel || "(no reg)",
+      lifecycle: j.lifecycle || "open",
+      stdH: std / 60, stints: [], actMin: 0, openClocks: 0, techs: [],
+    };
+    jobs[j.uid] = rec; jobList.push(rec);
+  });
+
+  var stints = [];
+  raw.assignments.forEach(function (a) {
+    var s = parseTs(a.startedAt);
+    if (!s) return;
+    var e = parseTs(a.endedAt);
+    var open = !e;
+    var mins = Math.max(0, ((e || now) - s) / 60000);
+    var job = jobs[a.jobId];
+    var op = ops[a.operatorId];
+    var st = {
+      job: job, op: op || null, opId: a.operatorId || "",
+      start: s, end: e, open: open, mins: mins,
+      reason: a.endReason || "", day: istDay(s), month: istDay(s).slice(0, 7),
+    };
+    stints.push(st);
+    if (!job) return;
+    job.stints.push(st);
+    job.actMin += mins;
+    if (open) job.openClocks++;
+    if (op && job.techs.indexOf(op.name) < 0) job.techs.push(op.name);
+  });
+
+  jobList.forEach(function (j) {
+    j.actH = j.actMin / 60;
+    j.varH = j.actH - j.stdH;
+    j.varPct = j.stdH > 0 ? (j.varH / j.stdH) * 100 : null;
+    // A single SESSION longer than a shift is a clock somebody forgot, not
+    // work. The car's total is not the test: a genuine three-day repair can
+    // pass twelve hours honestly, and judging it on the total would throw
+    // those away while keeping a card whose one stint ran all weekend.
+    j.longStint = j.stints.some(function (s) { return s.mins > MAX_STINT_MIN; });
+    // A card is measurable only when a comparison would mean something. This
+    // predicate and the status below must agree — when they did not, 22 cards
+    // counted as comparable while only 11 showed a comparable status.
+    j.comparable =
+      j.stdH > 0 && j.stdH <= MAX_STD_HOURS &&
+      j.openClocks === 0 && !j.longStint && j.actMin > 0 &&
+      (j.lifecycle === "completed" || j.actMin >= MIN_PROGRESS * j.stdH * 60);
+    j.status =
+      (j.stdH <= 0 || j.stdH > MAX_STD_HOURS) ? "No standard"
+      : (j.openClocks > 0 || j.longStint) ? "Clock running"
+      : (j.stints.length === 0) ? "Not started"
+      : !j.comparable ? "In progress"
+      : j.varPct <= -10 ? "Under"
+      : j.varPct <= 10 ? "On standard"
+      : j.varPct <= 50 ? "Watch"
+      : j.varPct <= 100 ? "Over" : "Critical";
+  });
+
+  stints.forEach(function (st) {
+    var j = st.job;
+    // The standard belongs to the CAR. Split it across the technicians on it
+    // in proportion to the hours each booked, so the parts always add back to
+    // the car's standard instead of double-counting it per technician.
+    st.stdShareH = (j && j.comparable && j.actMin > 0)
+      ? j.stdH * (st.mins / j.actMin) : 0;
+    st.measurable = !!(j && j.comparable && !st.open && st.mins > 0 &&
+                       st.mins <= MAX_STINT_MIN && st.op);
+  });
+
+  return { jobs: jobList, stints: stints, operators: opList, ops: ops, today: istDay(now) };
+}
+
+/* ======================== period selection ======================== */
+function periodRange(preset, todayKey) {
+  var d = new Date(todayKey + "T00:00:00Z");
+  if (preset === "today") return [todayKey, todayKey];
+  if (preset === "week") {
+    var wd = (d.getUTCDay() + 6) % 7;             // Monday = 0
+    var m = new Date(d); m.setUTCDate(d.getUTCDate() - wd);
+    return [m.toISOString().slice(0, 10), todayKey];
+  }
+  if (preset === "month") return [todayKey.slice(0, 7) + "-01", todayKey];
+  if (preset === "fy") {
+    var y = d.getUTCFullYear(), mth = d.getUTCMonth() + 1;   // Apr–Mar
+    return [(mth >= 4 ? y : y - 1) + "-04-01", todayKey];
+  }
+  return [null, null];                             // all
+}
+
+/* ============================== charts ============================== */
+var NS = "http://www.w3.org/2000/svg";
+function e(name, attrs, text) {
+  var n = document.createElementNS(NS, name);
+  for (var k in attrs) n.setAttribute(k, attrs[k]);
+  if (text !== undefined) n.textContent = text;
+  return n;
+}
+
+/** Horizontal grouped bars: standard against actual, one pair per car. */
+function carChart(rows) {
+  var wrap = document.createElement("div");
+  wrap.className = "chart";
+  if (!rows.length) { wrap.innerHTML = '<div class="empty">No cars in this period.</div>'; return wrap; }
+  var LM = 96, RM = 54, TM = 8, BM = 26, rowH = 40, barH = 13, gap = 2;
+  var W = Math.max(wrap.clientWidth || 520, 460), H = TM + rows.length * rowH + BM;
+  var IW = W - LM - RM;
+  var max = 0;
+  rows.forEach(function (r) { max = Math.max(max, r.stdH, r.actH); });
+  var top = Math.max(max * 1.12, 0.5);
+  var x = function (v) { return LM + (v / top) * IW; };
+  var svg = e("svg", { viewBox: "0 0 " + W + " " + H, width: "100%", height: H,
+                       preserveAspectRatio: "xMinYMin meet" });
+  for (var i = 0; i <= 4; i++) {
+    var v = top * i / 4, gx = x(v);
+    svg.appendChild(e("line", { class: "gl", x1: gx, y1: TM, x2: gx, y2: H - BM }));
+    svg.appendChild(e("text", { x: gx, y: H - BM + 14, "text-anchor": "middle" }, h1(v)));
+  }
+  svg.appendChild(e("text", { x: LM + IW / 2, y: H - 2, "text-anchor": "middle" }, "hours"));
+  rows.forEach(function (r, i) {
+    var y = TM + i * rowH + 5;
+    svg.appendChild(e("text", { class: "cat", x: LM - 8, y: y + barH - 2, "text-anchor": "end" }, r.reg));
+    svg.appendChild(e("rect", { x: LM, y: y, width: Math.max(x(r.stdH) - LM, 1), height: barH,
+                                rx: 3, fill: "var(--std)" }));
+    svg.appendChild(e("text", { class: "val", x: x(r.stdH) + 6, y: y + barH - 3 }, h1(r.stdH)));
+    var y2 = y + barH + gap;
+    svg.appendChild(e("rect", { x: LM, y: y2, width: Math.max(x(r.actH) - LM, 1), height: barH,
+                                rx: 3, fill: "var(--act)" }));
+    svg.appendChild(e("text", { class: "val", x: x(r.actH) + 6, y: y2 + barH - 3 }, h1(r.actH)));
+  });
+  wrap.appendChild(svg);
+  return wrap;
+}
+
+/** Vertical bars for hours, plus an efficiency line on its own right axis. */
+function dayChart(days) {
+  var wrap = document.createElement("div");
+  wrap.className = "chart";
+  if (!days.length) { wrap.innerHTML = '<div class="empty">No working days in this period.</div>'; return wrap; }
+  var band = 92, L = 42, R = 44, T = 16, B = 56, IH = 190;
+  var W = L + R + band * days.length, H = T + IH + B;
+  // Booked hours are NOT a bar. On this data a day books 200+ wall-clock
+  // hours against 3 measurable ones, so putting it on the same axis flattens
+  // the two bars that matter into 1px slivers -- which is exactly how the
+  // first version of this chart read. It goes under the day as a caption
+  // instead, where it still says what it needs to say.
+  var maxH = 0, maxE = 100;
+  days.forEach(function (d) {
+    maxH = Math.max(maxH, d.stdH, d.cleanH);
+    if (d.eff != null) maxE = Math.max(maxE, d.eff);
+  });
+  maxH = maxH || 1; maxE = Math.ceil(maxE / 50) * 50;
+  var yH = function (v) { return T + IH - (v / maxH) * IH; };
+  var yE = function (v) { return T + IH - (v / maxE) * IH; };
+  var svg = e("svg", { viewBox: "0 0 " + W + " " + H, width: W, height: H });
+  for (var i = 0; i <= 4; i++) {
+    var y = T + IH - (i / 4) * IH;
+    svg.appendChild(e("line", { class: "gl", x1: L, y1: y, x2: W - R, y2: y }));
+    svg.appendChild(e("text", { x: L - 6, y: y + 3.5, "text-anchor": "end" },
+      h1(maxH * i / 4)));
+    svg.appendChild(e("text", { x: W - R + 6, y: y + 3.5 }, Math.round(maxE * i / 4) + "%"));
+  }
+  svg.appendChild(e("text", { x: L - 6, y: T - 4, "text-anchor": "end" }, "h"));
+  var bw = 18, g = 4;
+  days.forEach(function (d, i) {
+    var cx = L + band * i + band / 2, x0 = cx - (bw * 2 + g) / 2;
+    [[d.stdH, "var(--std)"], [d.cleanH, "var(--act)"]].forEach(function (p, k) {
+      var y = yH(p[0]);
+      svg.appendChild(e("rect", { x: x0 + k * (bw + g), y: y, width: bw,
+        height: Math.max(T + IH - y, p[0] > 0 ? 1 : 0), rx: 2, fill: p[1] }));
+    });
+    svg.appendChild(e("text", { class: "cat", x: cx, y: H - B + 16, "text-anchor": "middle" },
+      fmtDay(d.key)));
+    // The booked-hours gap, said in words under the day rather than drawn as
+    // a third bar that would flatten the two above it.
+    var unmeasured = d.rawH - d.cleanH;
+    if (unmeasured > 0.5) {
+      svg.appendChild(e("text", { x: cx, y: H - B + 29, "text-anchor": "middle",
+        fill: "var(--ink-3)" }, "+" + h1(unmeasured) + " h unmeasured"));
+    }
+    if (d.open) {
+      svg.appendChild(e("text", { x: cx, y: H - B + 41, "text-anchor": "middle",
+        fill: "var(--bad)" }, d.open + " clock" + (d.open === 1 ? "" : "s") + " open"));
+    }
+  });
+  // The line breaks over days with nothing measurable. Drawing a zero there
+  // would read as a catastrophic day rather than an unmeasured one.
+  var run = [];
+  var flush = function () {
+    if (run.length > 1) {
+      svg.appendChild(e("polyline", { fill: "none", stroke: "var(--eff)", "stroke-width": 2,
+        "stroke-linejoin": "round",
+        points: run.map(function (p) { return p.x + "," + p.y; }).join(" ") }));
+    }
+    run = [];
+  };
+  days.forEach(function (d, i) {
+    if (d.eff == null) { flush(); return; }
+    run.push({ x: L + band * i + band / 2, y: yE(d.eff) });
+  });
+  flush();
+  days.forEach(function (d, i) {
+    if (d.eff == null) return;
+    var cx = L + band * i + band / 2, cy = yE(d.eff);
+    svg.appendChild(e("circle", { cx: cx, cy: cy, r: 3.5, fill: "var(--eff)",
+      stroke: "var(--panel)", "stroke-width": 2 }));
+    svg.appendChild(e("text", { class: "val", x: cx, y: cy - 8, "text-anchor": "middle",
+      fill: "var(--ink)" }, Math.round(d.eff) + "%"));
+  });
+  wrap.appendChild(svg);
+  return wrap;
+}
+
+function legend(items) {
+  var d = document.createElement("div");
+  d.className = "legend";
+  d.innerHTML = items.map(function (i) {
+    return '<span class="key"><span class="sw' + (i[2] ? " ln" : "") +
+           '" style="background:' + i[1] + '"></span>' + esc(i[0]) + "</span>";
+  }).join("");
+  return d;
+}
+
+/* ============================== render ============================== */
+var MODEL = null, PRESET = "month", TECH = "", MONTH = null, DOC_NAME = "";
+
+var STATUS_CLASS = {
+  "On standard": "p-on", "Under": "p-under", "Watch": "p-watch",
+  "Over": "p-over", "Critical": "p-crit",
+};
+var pill = function (s) {
+  return '<span class="pill ' + (STATUS_CLASS[s] || "p-mute") + '">' + esc(s) + "</span>";
+};
+
+function render() {
+  var app = document.getElementById("app");
+  if (!MODEL) return;
+  var M = MODEL;
+  var range = periodRange(PRESET, M.today);
+  var inRange = function (st) {
+    if (range[0] && st.day < range[0]) return false;
+    if (range[1] && st.day > range[1]) return false;
+    if (TECH && st.opId !== TECH) return false;
+    return true;
+  };
+  var picked = M.stints.filter(inRange);
+  var jobsInPeriod = [];
+  var seen = {};
+  picked.forEach(function (st) {
+    if (st.job && !seen[st.job.uid]) { seen[st.job.uid] = 1; jobsInPeriod.push(st.job); }
+  });
+
+  /* ---- data health, over the SELECTED PERIOD ----
+     It used to count the whole document no matter what the reader had
+     picked, which is half of why the period buttons looked dead: four of
+     the five blocks on screen ignored them. */
+  var hs = { cards: jobsInPeriod.length, comparable: 0, noStd: 0, running: 0,
+             prog: 0, notStarted: 0 };
+  jobsInPeriod.forEach(function (j) {
+    if (j.comparable) hs.comparable++;
+    if (j.status === "No standard") hs.noStd++;
+    if (j.status === "Clock running") hs.running++;
+    if (j.status === "In progress") hs.prog++;
+    if (j.status === "Not started") hs.notStarted++;
+  });
+  hs.openNow = picked.filter(function (s) { return s.open; }).length;
+  hs.orphan = picked.filter(function (s) { return !s.op; }).length;
+  hs.pct = hs.cards ? Math.round(hs.comparable / hs.cards * 100) : 0;
+  hs.allCards = M.jobs.length;
+
+  /* ---- days ---- */
+  var byDay = {};
+  picked.forEach(function (st) {
+    var d = byDay[st.day] || (byDay[st.day] = { key: st.day, stdH: 0, cleanH: 0, rawH: 0,
+      open: 0, cards: {}, techs: {} });
+    d.rawH += st.mins / 60;
+    if (st.measurable) { d.cleanH += st.mins / 60; d.stdH += st.stdShareH; }
+    if (st.open) d.open++;
+    if (st.job) d.cards[st.job.uid] = 1;
+    if (st.opId) d.techs[st.opId] = 1;
+  });
+  var days = Object.keys(byDay).sort().map(function (k) {
+    var d = byDay[k];
+    d.eff = d.cleanH > 0 ? (d.stdH / d.cleanH) * 100 : null;
+    d.measPct = d.rawH > 0 ? Math.round(d.cleanH / d.rawH * 100) : 0;
+    d.nCards = Object.keys(d.cards).length;
+    d.nTechs = Object.keys(d.techs).length;
+    return d;
+  });
+
+  /* ---- months (always all of them, they are the navigation) ---- */
+  var byMonth = {};
+  M.stints.forEach(function (st) {
+    if (TECH && st.opId !== TECH) return;
+    var m = byMonth[st.month] || (byMonth[st.month] = { key: st.month, stdH: 0, cleanH: 0,
+      rawH: 0, cards: {}, techs: {} });
+    m.rawH += st.mins / 60;
+    if (st.measurable) { m.cleanH += st.mins / 60; m.stdH += st.stdShareH; }
+    if (st.job) m.cards[st.job.uid] = 1;
+    if (st.opId) m.techs[st.opId] = 1;
+  });
+  var months = Object.keys(byMonth).sort().reverse().map(function (k) {
+    var m = byMonth[k];
+    m.eff = m.cleanH > 0 ? (m.stdH / m.cleanH) * 100 : null;
+    m.measPct = m.rawH > 0 ? Math.round(m.cleanH / m.rawH * 100) : 0;
+    m.nCards = Object.keys(m.cards).length;
+    m.nTechs = Object.keys(m.techs).length;
+    return m;
+  });
+  if (!MONTH || !byMonth[MONTH]) MONTH = months.length ? months[0].key : null;
+
+  /* ---- the selected month's cars and technicians ---- */
+  var monthStints = M.stints.filter(function (st) {
+    return st.month === MONTH && (!TECH || st.opId === TECH);
+  });
+  var carAgg = {}, techAgg = {};
+  monthStints.forEach(function (st) {
+    if (st.job) {
+      var c = carAgg[st.job.uid] || (carAgg[st.job.uid] = { job: st.job, stdH: 0, actH: 0, techs: {} });
+      c.actH += st.mins / 60;
+      if (st.measurable) c.stdH += st.stdShareH;
+      if (st.op) c.techs[st.op.name] = 1;
+    }
+    var key = st.op ? st.op.uid : "(none)";
+    var t = techAgg[key] || (techAgg[key] = {
+      name: st.op ? st.op.name : "unassigned", code: st.op ? st.op.code : "—",
+      stdH: 0, cleanH: 0, rawH: 0, cards: {} });
+    t.rawH += st.mins / 60;
+    if (st.measurable) { t.cleanH += st.mins / 60; t.stdH += st.stdShareH; }
+    if (st.job) t.cards[st.job.uid] = 1;
+  });
+  var cars = Object.keys(carAgg).map(function (k) {
+    var c = carAgg[k];
+    c.varH = c.stdH > 0 ? c.actH - c.stdH : null;
+    c.techNames = Object.keys(c.techs).join(", ") || "nobody";
+    return c;
+  }).sort(function (a, b) { return (b.varH == null ? -1e9 : b.varH) - (a.varH == null ? -1e9 : a.varH); });
+  var techs = Object.keys(techAgg).map(function (k) {
+    var t = techAgg[k];
+    t.eff = t.cleanH > 0 ? (t.stdH / t.cleanH) * 100 : null;
+    t.nCards = Object.keys(t.cards).length;
+    return t;
+  }).sort(function (a, b) { return (b.eff == null ? -1 : b.eff) - (a.eff == null ? -1 : a.eff); });
+
+  /* ---- cars and technicians IN THE SELECTED PERIOD ---- */
+  var periodCars = jobsInPeriod.map(function (j) {
+    var mine = j.stints.filter(inRange);
+    return { job: j, periodH: mine.reduce(function (a, s) { return a + s.mins / 60; }, 0) };
+  }).sort(function (a, b) { return b.periodH - a.periodH; });
+
+  var periodTechs = M.operators.filter(function (o) { return o.active; }).map(function (o) {
+    var mine = picked.filter(function (s) { return s.opId === o.uid; });
+    var rawH = 0, cleanH = 0, stdH = 0, open = 0;
+    mine.forEach(function (s) {
+      rawH += s.mins / 60;
+      if (s.measurable) { cleanH += s.mins / 60; stdH += s.stdShareH; }
+      if (s.open) open++;
+    });
+    return { name: o.name, code: o.code, rawH: rawH, stdH: stdH, open: open,
+             eff: cleanH > 0 ? stdH / cleanH * 100 : null, n: mine.length };
+  }).filter(function (t) { return t.n > 0; })
+    .sort(function (a, b) { return b.rawH - a.rawH; });
+
+  /* ------------------------------ paint ------------------------------ */
+  app.textContent = "";
+  var showing = range[0]
+    ? (range[0] === range[1] ? fmtDay(range[0])
+       : fmtDay(range[0]) + " to " + fmtDay(range[1]))
+    : "All dates";
+  var who = TECH && M.ops[TECH] ? M.ops[TECH].name : "all technicians";
+
+  app.appendChild(html(
+    '<div class="top">' +
+      '<div>' +
+        '<div class="eyebrow">' + esc(DOC_NAME || "Service bay") + "</div>" +
+        '<h1>Hours taken against hours allowed</h1>' +
+        '<p class="showing">' + esc(showing) + " · " + esc(who) + "</p>" +
+      "</div>" +
+      '<div class="pickers">' +
+        '<div class="seg" id="preset">' +
+          btn("today", "Today") + btn("week", "This week") + btn("month", "This month") +
+          btn("fy", "FY to date") + btn("all", "All") +
+        "</div>" +
+        '<select id="tech"><option value="">All technicians</option>' +
+          M.operators.filter(function (o) { return o.active; }).map(function (o) {
+            return '<option value="' + esc(o.uid) + '"' + (TECH === o.uid ? " selected" : "") +
+                   ">" + esc(o.name) + "</option>";
+          }).join("") +
+        "</select>" +
+      "</div>" +
+    "</div>"));
+
+  /* health */
+  var cells = [
+    ["Job cards", hs.cards, ""],
+    ["Measurable", hs.comparable, ""],
+    ["Measurable %", hs.pct + "%", hs.pct >= 70 ? "good" : hs.pct >= 40 ? "warn" : "bad"],
+    ["No standard", hs.noStd, hs.noStd ? "warn" : "good"],
+    ["Clock running", hs.running, hs.running ? "bad" : "good"],
+    ["In progress", hs.prog, "calm"],
+    ["Not started", hs.notStarted, "calm"],
+    ["Open clocks now", hs.openNow, hs.openNow ? "bad" : "good"],
+    ["No technician", hs.orphan, hs.orphan ? "bad" : "good"],
+  ];
+  app.appendChild(html(
+    '<div class="health"><div class="hgrid">' +
+      cells.map(function (c) {
+        return '<div class="hcell"><span class="hk">' + esc(c[0]) + '</span>' +
+               '<span class="hv ' + c[2] + '">' + esc(c[1]) + "</span></div>";
+      }).join("") +
+    '</div><div class="hlede"><b>' + hs.comparable + " of " + hs.cards +
+      " job cards in this period</b> can be measured against a standard — every efficiency figure below "
+      + "comes from those. The document holds " + hs.allCards + " cards in all." +
+      (hs.openNow || hs.orphan
+        ? ' <span class="bad">' +
+          [hs.openNow ? hs.openNow + " clock(s) still running" : null,
+           hs.orphan ? hs.orphan + " stint(s) reaching no technician" : null]
+            .filter(Boolean).join(" · ") + ".</span>"
+        : "") +
+    "</div></div>"));
+
+  /* today */
+  var sec1 = html('<section><h2>Cars in this period</h2></section>');
+  var grid = html('<div class="cols two"></div>');
+  grid.appendChild(table(
+    ["Car", "Technicians", { t: "Std h", n: 1 }, { t: "This period h", n: 1 },
+     { t: "Total h", n: 1 }, "Status"],
+    periodCars.map(function (c) {
+      var j = c.job;
+      return ['<span class="reg">' + esc(j.reg) + '</span><span class="sub2">' + esc(j.card) + "</span>",
+              esc(j.techs.join(", ") || "nobody"),
+              { n: 1, v: h1(j.stdH) }, { n: 1, v: h1(c.periodH) }, { n: 1, v: h1(j.actH) },
+              pill(j.status)];
+    }), "No cars worked in this period."));
+  var right = document.createElement("div");
+  right.appendChild(legend([["Standard", "var(--std)"], ["Actual, all time", "var(--act)"]]));
+  right.appendChild(carChart(periodCars.slice(0, 12).map(function (c) { return c.job; })));
+  grid.appendChild(right);
+  sec1.appendChild(grid);
+  sec1.appendChild(table(
+    ["Technician", { t: "Hours", n: 1 }, { t: "Std earned", n: 1 },
+     { t: "Efficiency", n: 1 }, "Open"],
+    periodTechs.map(function (t) {
+      return ['<span class="reg">' + esc(t.name) + '</span><span class="sub2">' + esc(t.code) + "</span>",
+              { n: 1, v: h1(t.rawH) }, { n: 1, v: h1(t.stdH) },
+              { n: 1, v: t.eff == null ? '<span class="dash">—</span>' : Math.round(t.eff) + "%" },
+              t.open ? '<span class="pill p-crit">running</span>' : ""];
+    }), "Nobody booked time in this period."));
+  app.appendChild(sec1);
+
+  /* day by day */
+  var sec2 = html('<section><h2>Day by day</h2>' +
+    '<p class="sub">Standard earned against hours booked, with efficiency on the right axis. ' +
+    'The line breaks over days with nothing measurable — an unmeasured day is not a bad day.</p></section>');
+  sec2.appendChild(legend([["Standard earned", "var(--std)"], ["Measurable", "var(--act)"],
+                           ["Booked", "var(--raw)"], ["Efficiency %", "var(--eff)", 1]]));
+  sec2.appendChild(dayChart(days));
+  sec2.appendChild(table(
+    ["Day", { t: "Cards", n: 1 }, { t: "Techs", n: 1 }, { t: "Std h", n: 1 },
+     { t: "Measurable h", n: 1 }, { t: "Efficiency", n: 1 }, { t: "Booked h", n: 1 },
+     { t: "Measurable %", n: 1 }, { t: "Open", n: 1 }],
+    days.slice().reverse().map(function (d) {
+      return [esc(fmtDay(d.key)), { n: 1, v: d.nCards }, { n: 1, v: d.nTechs },
+              { n: 1, v: h1(d.stdH) }, { n: 1, v: h1(d.cleanH) },
+              { n: 1, v: d.eff == null ? '<span class="dash">—</span>' : Math.round(d.eff) + "%" },
+              { n: 1, v: h1(d.rawH) }, { n: 1, v: d.measPct + "%" },
+              { n: 1, v: d.open ? '<span class="pos">' + d.open + "</span>" : "0" }];
+    }), "No working days in this period."));
+  app.appendChild(sec2);
+
+  /* months */
+  var sec3 = html('<section><h2>Months</h2>' +
+    '<p class="sub">Click a month to see its cars and technicians below.</p></section>');
+  sec3.appendChild(table(
+    ["Month", { t: "Cards", n: 1 }, { t: "Techs", n: 1 }, { t: "Std h", n: 1 },
+     { t: "Measurable h", n: 1 }, { t: "Efficiency", n: 1 }, { t: "Booked h", n: 1 },
+     { t: "Measurable %", n: 1 }],
+    months.map(function (m) {
+      return { click: m.key, sel: m.key === MONTH, cells: [
+        '<span class="reg">' + esc(fmtMonth(m.key)) + "</span>",
+        { n: 1, v: m.nCards }, { n: 1, v: m.nTechs }, { n: 1, v: h1(m.stdH) },
+        { n: 1, v: h1(m.cleanH) },
+        { n: 1, v: m.eff == null ? '<span class="dash">—</span>' : Math.round(m.eff) + "%" },
+        { n: 1, v: h1(m.rawH) }, { n: 1, v: m.measPct + "%" }] };
+    }), "No data yet."));
+  app.appendChild(sec3);
+
+  var sec4 = html('<section><h2>' + esc(MONTH ? fmtMonth(MONTH) : "Selected month") +
+    " · cars and technicians</h2></section>");
+  var g2 = html('<div class="cols two"></div>');
+  g2.appendChild(table(
+    ["Car", "Technicians", { t: "Std h", n: 1 }, { t: "Actual h", n: 1 }, { t: "Diff h", n: 1 }],
+    cars.map(function (c) {
+      return ['<span class="reg">' + esc(c.job.reg) + '</span><span class="sub2">' +
+                esc(c.job.card) + "</span>",
+              esc(c.techNames), { n: 1, v: c.stdH ? h1(c.stdH) : '<span class="dash">—</span>' },
+              { n: 1, v: h1(c.actH) },
+              { n: 1, v: c.varH == null ? '<span class="dash">—</span>'
+                  : '<span class="' + (c.varH > 0 ? "pos" : "neg") + '">' +
+                    (c.varH > 0 ? "+" : "") + h1(c.varH) + "</span>" }];
+    }), "No cars in this month."));
+  g2.appendChild(table(
+    ["Technician", { t: "Cards", n: 1 }, { t: "Std earned", n: 1 },
+     { t: "Measurable h", n: 1 }, { t: "Efficiency", n: 1 }],
+    techs.map(function (t) {
+      return ['<span class="reg">' + esc(t.name) + '</span><span class="sub2">' + esc(t.code) + "</span>",
+              { n: 1, v: t.nCards }, { n: 1, v: h1(t.stdH) }, { n: 1, v: h1(t.cleanH) },
+              { n: 1, v: t.eff == null ? '<span class="dash">—</span>' : Math.round(t.eff) + "%" }];
+    }), "No technicians in this month."));
+  sec4.appendChild(g2);
+  app.appendChild(sec4);
+
+  app.appendChild(html('<footer>Hours are stint wall-clock — Stop minus Start, summed. ' +
+    "A car's standard is split between the technicians on it in proportion to the hours each booked. " +
+    "Efficiency is standard earned divided by measurable hours, never an average of percentages.</footer>"));
+
+  /* handlers */
+  document.querySelectorAll("#preset button").forEach(function (b) {
+    b.onclick = function () { PRESET = b.dataset.k; render(); };
+  });
+  document.getElementById("tech").onchange = function () { TECH = this.value; render(); };
+  document.querySelectorAll("tr[data-month]").forEach(function (tr) {
+    tr.onclick = function () { MONTH = tr.dataset.month; render(); };
+  });
+
+  function btn(k, label) {
+    return '<button type="button" data-k="' + k + '" aria-pressed="' +
+           (PRESET === k) + '">' + label + "</button>";
+  }
+}
+
+function html(s) {
+  var d = document.createElement("div");
+  d.innerHTML = s.trim();
+  return d.firstElementChild;
+}
+
+function table(heads, rows, emptyMsg) {
+  var wrap = document.createElement("div");
+  wrap.className = "tw";
+  if (!rows.length) { wrap.innerHTML = '<div class="empty">' + esc(emptyMsg) + "</div>"; return wrap; }
+  var th = heads.map(function (h) {
+    var t = typeof h === "object" ? h.t : h, n = typeof h === "object" && h.n;
+    return "<th" + (n ? ' class="n"' : "") + ">" + esc(t) + "</th>";
+  }).join("");
+  var tb = rows.map(function (r) {
+    var cells = r.cells || r;
+    var attrs = r.click ? ' class="click' + (r.sel ? " sel" : "") + '" data-month="' + esc(r.click) + '"' : "";
+    return "<tr" + attrs + ">" + cells.map(function (c) {
+      if (c && typeof c === "object") return '<td class="n">' + c.v + "</td>";
+      return "<td>" + c + "</td>";
+    }).join("") + "</tr>";
+  }).join("");
+  wrap.innerHTML = "<table><thead><tr>" + th + "</tr></thead><tbody>" + tb + "</tbody></table>";
+  return wrap;
+}
+
+/* ============================== boot ============================== */
+function fail(msg) {
+  document.getElementById("app").innerHTML = '<div class="err">' + esc(msg) + "</div>";
+}
+
+/**
+ * Which Grist is showing this widget?
+ *
+ * `ancestorOrigins` answers directly in Chrome and Safari; Firefox has no such
+ * list, so the referrer of the frame is the fallback. Both give an origin the
+ * browser itself vouches for -- neither can be spoofed by the page inside the
+ * frame, which is this one.
+ */
+function gristOrigin() {
+  try {
+    var a = window.location.ancestorOrigins;
+    if (a && a.length) return a[a.length - 1];
+  } catch (err) { /* not supported; fall through */ }
+  if (document.referrer) {
+    try { return new URL(document.referrer).origin; } catch (err) { /* malformed */ }
+  }
+  return null;
+}
+
+function boot() {
+  grist.ready({ requiredAccess: "full" });
+  grist.onRecords(function () { load(); });
+  load();
+  setInterval(load, 60000);   // open clocks keep moving; so should the page
+}
+
+(function start() {
+  var origin = gristOrigin();
+  if (!origin) {
+    fail("This page is a Grist widget and has to run inside a Grist document. " +
+         "Add it with Add Widget → Custom → Custom URL.");
+    return;
+  }
+  var tag = document.createElement("script");
+  tag.src = origin + "/grist-plugin-api.js";
+  tag.onload = function () {
+    if (typeof grist === "undefined") {
+      fail("Loaded " + origin + "/grist-plugin-api.js but it defined no API.");
+      return;
+    }
+    boot();
+  };
+  tag.onerror = function () {
+    fail("Could not load the Grist plugin API from " + origin + ".");
+  };
+  document.head.appendChild(tag);
+})();
+</script>
+</body>
+</html>
