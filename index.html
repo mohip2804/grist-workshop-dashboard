@@ -798,6 +798,35 @@ function gristOrigin() {
   return null;
 }
 
+/**
+ * Pull the three tables and repaint.
+ *
+ * `fetchTable` rather than the mapped-column route because a widget is scoped
+ * to a single table that way, and this needs Jobs, Assignments and Operators
+ * together. That is the whole reason it asks for `full` access; it never
+ * writes anything.
+ */
+function load() {
+  // The document's own name, so the page can title itself without a customer
+  // being written into this file.
+  if (grist.docApi.getDocName) {
+    grist.docApi.getDocName()
+      .then(function (n) { DOC_NAME = n || ""; })
+      .catch(function () { /* older server; the fallback title stands */ });
+  }
+  Promise.all([
+    grist.docApi.fetchTable("Jobs"),
+    grist.docApi.fetchTable("Assignments"),
+    grist.docApi.fetchTable("Operators"),
+  ]).then(function (t) {
+    MODEL = build({ jobs: toRows(t[0]), assignments: toRows(t[1]), operators: toRows(t[2]) });
+    render();
+  }).catch(function (err) {
+    fail("Could not read the document: " + (err && err.message ? err.message : err) +
+         ". This widget needs Full access — set it in the widget panel on the right.");
+  });
+}
+
 function boot() {
   grist.ready({ requiredAccess: "full" });
   grist.onRecords(function () { load(); });
