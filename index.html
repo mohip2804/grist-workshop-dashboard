@@ -209,8 +209,14 @@ function build(raw) {
   var now = Date.now();
   var ops = {}, opList = [];
   raw.operators.forEach(function (o) {
+    // Both spellings on purpose. The column was `Active` and is now `active`;
+    // reading only one of them silently made every leaver assignable again,
+    // because `undefined !== false` is true and the filter below then kept
+    // them. Absent still means present-and-working -- only an explicit false
+    // takes somebody off the floor.
+    var flag = o.active !== undefined ? o.active : o.Active;
     var rec = { uid: o.uid, code: o.externalId || "", name: o.name || o.uid,
-                active: o.Active !== false };
+                active: flag !== false };
     ops[o.uid] = rec; opList.push(rec);
   });
 
@@ -265,9 +271,16 @@ function build(raw) {
       j.stdH > 0 && j.stdH <= MAX_STD_HOURS &&
       j.openClocks === 0 && !j.longStint && j.actMin > 0 &&
       (j.lifecycle === "completed" || j.actMin >= MIN_PROGRESS * j.stdH * 60);
+    // Two different facts, and they were one word. "Clock running" means
+    // somebody is on this car now; "Clock left running" means a stint ran past
+    // the end of a shift and was closed only by the next reassignment. Saying
+    // both with the first word made this tile read 1 beside an "Open clocks
+    // now" of 0 on the same screen -- and the one worth acting on is the
+    // second, because it is the number that is wrong rather than the car.
     j.status =
       (j.stdH <= 0 || j.stdH > MAX_STD_HOURS) ? "No standard"
-      : (j.openClocks > 0 || j.longStint) ? "Clock running"
+      : (j.openClocks > 0) ? "Clock running"
+      : j.longStint ? "Clock left running"
       : (j.stints.length === 0) ? "Not started"
       : !j.comparable ? "In progress"
       : j.varPct <= -10 ? "Under"
@@ -474,11 +487,12 @@ function render() {
      picked, which is half of why the period buttons looked dead: four of
      the five blocks on screen ignored them. */
   var hs = { cards: jobsInPeriod.length, comparable: 0, noStd: 0, running: 0,
-             prog: 0, notStarted: 0 };
+             leftRunning: 0, prog: 0, notStarted: 0 };
   jobsInPeriod.forEach(function (j) {
     if (j.comparable) hs.comparable++;
     if (j.status === "No standard") hs.noStd++;
     if (j.status === "Clock running") hs.running++;
+    if (j.status === "Clock left running") hs.leftRunning++;
     if (j.status === "In progress") hs.prog++;
     if (j.status === "Not started") hs.notStarted++;
   });
@@ -615,10 +629,10 @@ function render() {
     ["Measurable", hs.comparable, ""],
     ["Measurable %", hs.pct + "%", hs.pct >= 70 ? "good" : hs.pct >= 40 ? "warn" : "bad"],
     ["No standard", hs.noStd, hs.noStd ? "warn" : "good"],
-    ["Clock running", hs.running, hs.running ? "bad" : "good"],
+    ["Clock left running", hs.leftRunning, hs.leftRunning ? "bad" : "good"],
     ["In progress", hs.prog, "calm"],
     ["Not started", hs.notStarted, "calm"],
-    ["Open clocks now", hs.openNow, hs.openNow ? "bad" : "good"],
+    ["Open clocks now", hs.openNow, ""],
     ["No technician", hs.orphan, hs.orphan ? "bad" : "good"],
   ];
   app.appendChild(html(
