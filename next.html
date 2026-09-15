@@ -1,0 +1,636 @@
+<meta charset="utf-8" />
+<title>Efficiency</title>
+<!--
+  Standard hours against actual hours, for a service workshop.
+
+  WHAT IT ANSWERS, in order down the page:
+
+    1. How is the shop doing?            one number -- efficiency
+    2. How is the work distributed?      the cumulative curve
+    3. Who varies, and by how much?      per technician
+
+  THE NAMING TRAP THIS PAGE EXISTS TO AVOID. The measure everyone reaches for
+  first is actual / standard, and on this data it is 129% -- which sounds like
+  a win and means jobs take 29% longer than the book. Inverted it is
+  efficiency, 77%, where higher is better and every person in a workshop
+  already knows which way is up. This page reports efficiency, and says the
+  other figure out loud only where it helps someone check the arithmetic.
+
+  WHY THERE IS NO AVERAGE LINE. The mean of the per-job percentages is 179%
+  and the median is 112%: four cards carry a standard under thirty minutes,
+  and an eighteen-minute job that took five hours scores 1,883%. True, and
+  about nothing anybody can act on. So the page is built on TOTALS -- all the
+  standard hours over all the actual hours -- which cannot be dragged around
+  by a small job, and the distribution is shown as a curve rather than
+  summarised by a statistic that lies.
+
+  COLOUR. One hue. Good and bad are carried by position against a labelled
+  100% line and by words, never by colour alone -- green/red as adjacent marks
+  fail colour-blind separation (deutan delta-E 4.1), and this page is read by
+  whoever is standing at the screen.
+-->
+<style>
+  :root {
+    color-scheme: light;
+    --surface:        #fcfcfb;
+    --surface-sunk:   #f2f1ee;
+    --rule:           #e2e1dc;
+    --text:           #0b0b0b;
+    --text-2:         #52514e;
+    --text-3:         #86847d;
+    --mark:           #2a78d6;
+    --mark-soft:      #cde2fb;
+    --good:           #0ca30c;
+    --critical:       #d03b3b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --surface:      #1a1a19;
+      --surface-sunk: #232320;
+      --rule:         #383835;
+      --text:         #ffffff;
+      --text-2:       #c3c2b7;
+      --text-3:       #86847d;
+      --mark:         #3987e5;
+      --mark-soft:    #184f95;
+      --good:         #0ca30c;
+      --critical:     #e66767;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface:      #1a1a19;
+    --surface-sunk: #232320;
+    --rule:         #383835;
+    --text:         #ffffff;
+    --text-2:       #c3c2b7;
+    --text-3:       #86847d;
+    --mark:         #3987e5;
+    --mark-soft:    #184f95;
+    --good:         #0ca30c;
+    --critical:     #e66767;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--surface); }
+  body {
+    color: var(--text);
+    font: 14px/1.5 ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+    font-variant-numeric: tabular-nums;
+    padding: 20px 18px 40px;
+  }
+  .wrap { max-width: 1040px; margin: 0 auto; display: grid; gap: 26px; }
+
+  .eyebrow {
+    font-size: 11px; letter-spacing: .09em; text-transform: uppercase;
+    color: var(--text-3); margin: 0 0 3px;
+  }
+  h1 { font-size: 21px; font-weight: 650; margin: 0 0 2px; letter-spacing: -.01em; }
+  h2 { font-size: 15px; font-weight: 650; margin: 0 0 1px; }
+  .sub { color: var(--text-2); font-size: 13px; margin: 0; }
+  .note { color: var(--text-3); font-size: 12px; margin: 6px 0 0; }
+
+  .top { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-start;
+         justify-content: space-between; }
+  .seg { display: flex; flex-wrap: wrap; gap: 2px; background: var(--surface-sunk);
+         border-radius: 8px; padding: 2px; }
+  .seg button {
+    font: inherit; font-size: 12px; border: 0; background: transparent; cursor: pointer;
+    color: var(--text-2); padding: 5px 10px; border-radius: 6px;
+  }
+  .seg button[aria-pressed="true"] { background: var(--surface); color: var(--text); font-weight: 600; }
+  .seg button:focus-visible { outline: 2px solid var(--mark); outline-offset: 1px; }
+
+  /* ---- the one number ---- */
+  .hero { display: flex; flex-wrap: wrap; gap: 30px 44px; align-items: baseline;
+          padding-bottom: 20px; border-bottom: 1px solid var(--rule); }
+  .big { font-size: 62px; line-height: .95; font-weight: 640; letter-spacing: -.03em; }
+  .big small { font-size: 26px; font-weight: 550; color: var(--text-2); margin-left: 2px; }
+  .beside { display: grid; gap: 12px; }
+  .pair { display: grid; gap: 1px; }
+  .pair .k { font-size: 11px; letter-spacing: .07em; text-transform: uppercase; color: var(--text-3); }
+  .pair .v { font-size: 18px; font-weight: 600; }
+
+  .verdict { font-size: 13px; font-weight: 600; }
+  .verdict.good { color: var(--good); }
+  .verdict.bad  { color: var(--critical); }
+
+  figure { margin: 0; }
+  figcaption { margin-bottom: 12px; }
+  .plot { width: 100%; overflow-x: auto; }
+  svg { display: block; max-width: 100%; height: auto; }
+
+  .bar      { fill: var(--mark); }
+  .bar-soft { fill: var(--mark-soft); }
+  .axis     { stroke: var(--rule); stroke-width: 1; }
+  .grid     { stroke: var(--rule); stroke-width: 1; stroke-dasharray: 2 3; }
+  .tick     { fill: var(--text-3); font-size: 11px; }
+  .lbl      { fill: var(--text-2); font-size: 11px; }
+  .val      { fill: var(--text); font-size: 11px; font-weight: 600; }
+  .refline  { stroke: var(--text-2); stroke-width: 1.5; stroke-dasharray: 4 3; }
+  .refnote  { fill: var(--text-2); font-size: 11px; font-weight: 600; }
+  .curve    { fill: none; stroke: var(--mark); stroke-width: 2;
+              stroke-linejoin: round; stroke-linecap: round; }
+  .area     { fill: var(--mark); opacity: .12; }
+  .dot      { fill: var(--mark); stroke: var(--surface); stroke-width: 2; }
+  g.hit:hover .bar, g.hit:focus-visible .bar { fill: var(--text); }
+  g.hit { cursor: default; }
+  g.hit:focus-visible { outline: 2px solid var(--mark); outline-offset: 2px; }
+
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: right; padding: 6px 9px; border-bottom: 1px solid var(--rule); }
+  th:first-child, td:first-child { text-align: left; }
+  th { font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
+       color: var(--text-3); font-weight: 600; }
+  details { border-top: 1px solid var(--rule); padding-top: 10px; }
+  summary { cursor: pointer; font-size: 12px; color: var(--text-2); }
+  .scroll { overflow-x: auto; }
+
+  .msg { padding: 18px; border: 1px solid var(--rule); border-radius: 10px;
+         color: var(--text-2); font-size: 13px; }
+</style>
+
+<div class="wrap" id="app"></div>
+
+<script>
+/* global grist */
+"use strict";
+
+var IST_OFFSET_MIN = 330;
+var MS_MIN = 60000;
+/* Above this a standard is the portal's rupee amount in the hours column, not
+   a time. See `ratedInRupees` in the extension's extract/siebel.ts. */
+var MAX_STD_HOURS = 24;
+/* Below a quarter of the standard booked, the job is part-done and comparing
+   it to a FULL standard says nothing -- one minute against 2.2 hours scored
+   10,850% before this guard existed. */
+var MIN_PROGRESS = 0.25;
+/* A single stint longer than a shift is a clock somebody forgot. The card's
+   TOTAL is not the test: a genuine three-day repair can pass twelve hours
+   honestly, and judging on the total would throw those away. */
+var MAX_STINT_MIN = 12 * 60;
+/* Under this many finished cards a technician's percentage is one or two jobs
+   wide and swings wildly -- 2,698% on two cards. Shown in the table, kept off
+   the chart. */
+var MIN_CARDS = 5;
+
+var MODEL = null, DOC_NAME = "", RANGE = "all";
+var app = document.getElementById("app");
+
+var esc = function (s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+  });
+};
+var el = function (html) {
+  var d = document.createElement("div");
+  d.innerHTML = html;
+  return d.firstElementChild;
+};
+var fail = function (m) { app.textContent = ""; app.appendChild(el('<p class="msg">' + esc(m) + "</p>")); };
+var istDay = function (ms) { return new Date(ms + IST_OFFSET_MIN * MS_MIN).toISOString().slice(0, 10); };
+var round1 = function (n) { return Math.round(n * 10) / 10; };
+
+function toRows(t) {
+  var keys = Object.keys(t), n = (t.id || []).length, out = [];
+  for (var i = 0; i < n; i++) {
+    var r = {};
+    for (var k = 0; k < keys.length; k++) r[keys[k]] = t[keys[k]][i];
+    out.push(r);
+  }
+  return out;
+}
+
+/* ------------------------------ model ------------------------------ */
+
+function build(raw) {
+  var ops = {}, jobs = {}, stints = [];
+
+  raw.operators.forEach(function (o) {
+    // Both spellings: the column was `Active`, and is now `active`. Reading
+    // only one made `undefined !== false` true and returned every leaver.
+    var flag = o.active !== undefined ? o.active : o.Active;
+    ops[o.uid] = { uid: o.uid, name: o.name || o.uid, active: flag !== false,
+                   actH: 0, stdH: 0, cards: {} };
+  });
+
+  raw.jobs.forEach(function (j) {
+    var stdMin = j.effectiveAllottedMinutes != null ? j.effectiveAllottedMinutes
+               : (j.allottedMinutesOverride != null ? j.allottedMinutesOverride
+               : (j.allottedMinutes || 0));
+    jobs[j.uid] = {
+      uid: j.uid, car: j.subjectLabel || j.externalId || j.uid,
+      code: j.externalId || "", title: j.title || "",
+      stdH: (stdMin || 0) / 60, actMin: 0, stints: [], lifecycle: j.lifecycle,
+    };
+  });
+
+  raw.assignments.forEach(function (a) {
+    var j = jobs[a.jobId];
+    if (!j) return;
+    var s = Date.parse(a.startedAt), e = a.endedAt ? Date.parse(a.endedAt) : NaN;
+    if (!isFinite(s) || !isFinite(e)) return;
+    var mins = (e - s) / MS_MIN;
+    if (!(mins > 0)) return;
+    var st = { job: j, op: ops[a.operatorId] || null, mins: mins, day: istDay(s), start: s };
+    j.actMin += mins;
+    j.stints.push(st);
+    stints.push(st);
+  });
+
+  Object.keys(jobs).forEach(function (k) {
+    var j = jobs[k];
+    j.actH = j.actMin / 60;
+    j.longStint = j.stints.some(function (s) { return s.mins > MAX_STINT_MIN; });
+    // Comparable = a comparison would mean something. The page's every figure
+    // is built from these and only these.
+    j.ok = j.stdH > 0 && j.stdH <= MAX_STD_HOURS && !j.longStint && j.actMin > 0 &&
+           (j.lifecycle === "completed" || j.actMin >= MIN_PROGRESS * j.stdH * 60);
+    j.util = j.stdH > 0 ? (j.actH / j.stdH) * 100 : null;
+  });
+
+  stints.forEach(function (st) {
+    if (!st.op) return;
+    st.op.actH += st.mins / 60;
+    st.op.cards[st.job.uid] = 1;
+    // The standard belongs to the CAR. Split it across whoever worked it in
+    // proportion to the hours each booked, so the parts add back to the car's
+    // standard instead of counting it once per technician.
+    if (st.job.ok && st.job.actMin > 0) st.op.stdH += st.job.stdH * (st.mins / st.job.actMin);
+  });
+
+  var days = {};
+  stints.forEach(function (s) { days[s.day] = 1; });
+
+  return {
+    jobs: Object.keys(jobs).map(function (k) { return jobs[k]; }),
+    operators: Object.keys(ops).map(function (k) { return ops[k]; }),
+    stints: stints, days: Object.keys(days).sort(),
+  };
+}
+
+function inRange(day) {
+  if (RANGE === "all" || !MODEL.days.length) return true;
+  var last = MODEL.days[MODEL.days.length - 1];
+  if (RANGE === "today") return day === last;
+  var n = RANGE === "week" ? 7 : 30;
+  var cut = istDay(Date.parse(last + "T00:00:00Z") - (n - 1) * 86400000);
+  return day >= cut;
+}
+
+/* ------------------------------ svg helpers ------------------------------ */
+
+function svg(w, h, body) {
+  return '<svg viewBox="0 0 ' + w + " " + h + '" width="' + w + '" height="' + h +
+         '" role="img">' + body + "</svg>";
+}
+var txt = function (x, y, s, cls, anchor) {
+  return '<text x="' + x + '" y="' + y + '" class="' + cls + '"' +
+         (anchor ? ' text-anchor="' + anchor + '"' : "") + ">" + esc(s) + "</text>";
+};
+/* 4px rounded data-end, square against the baseline. */
+function vbar(x, y, w, h, cls) {
+  if (h <= 0) return "";
+  var r = Math.min(4, w / 2, h);
+  return '<path class="' + cls + '" d="M' + x + " " + (y + h) + "V" + (y + r) +
+         "a" + r + " " + r + " 0 0 1 " + r + " " + -r + "h" + (w - 2 * r) +
+         "a" + r + " " + r + " 0 0 1 " + r + " " + r + "V" + (y + h) + 'Z"/>';
+}
+function hbar(x, y, w, h, cls) {
+  if (w <= 0) return "";
+  var r = Math.min(4, h / 2, w);
+  return '<path class="' + cls + '" d="M' + x + " " + y + "h" + (w - r) +
+         "a" + r + " " + r + " 0 0 1 " + r + " " + r + "v" + (h - 2 * r) +
+         "a" + r + " " + r + " 0 0 1 " + -r + " " + r + "H" + x + 'Z"/>';
+}
+
+/* ------------------------------ charts ------------------------------ */
+
+/* 1. The one number. Not a chart -- a single figure needs no plot. */
+function heroBlock(m) {
+  var S = 0, A = 0;
+  m.forEach(function (j) { S += j.stdH; A += j.actH; });
+  var eff = A > 0 ? (S / A) * 100 : null;
+  var util = S > 0 ? (A / S) * 100 : null;
+  var good = eff !== null && eff >= 100;
+
+  return el(
+    '<section class="hero">' +
+      '<div>' +
+        '<p class="eyebrow">Efficiency &mdash; standard hours &divide; actual hours</p>' +
+        '<div class="big">' + (eff === null ? "&mdash;" : Math.round(eff)) + "<small>%</small></div>" +
+        '<p class="verdict ' + (good ? "good" : "bad") + '">' +
+          (eff === null ? "" :
+            good ? "▲ Beating the book" :
+                   "▼ " + Math.round(100 - eff) + "% slower than the book") +
+        "</p>" +
+      "</div>" +
+      '<div class="beside">' +
+        '<div class="pair"><span class="k">Standard hours</span><span class="v">' +
+          round1(S) + "</span></div>" +
+        '<div class="pair"><span class="k">Actual hours</span><span class="v">' +
+          round1(A) + "</span></div>" +
+        '<div class="pair"><span class="k">Cards measured</span><span class="v">' +
+          m.length + "</span></div>" +
+      "</div>" +
+      '<div class="beside">' +
+        '<div class="pair"><span class="k">The same figure inverted</span><span class="v">' +
+          (util === null ? "&mdash;" : Math.round(util) + "%") + "</span></div>" +
+        '<p class="note" style="max-width:26ch">Actual &divide; standard. Higher is worse ' +
+          "&mdash; which is why the headline is the other way up.</p>" +
+      "</div>" +
+    "</section>");
+}
+
+/* 2. Cumulative -- the share of cards at or under each level. Outlier-proof:
+      one absurd card moves the curve by 1/n, not by its own magnitude. */
+function cumulativeChart(m) {
+  var W = 940, H = 300, L = 46, R = 22, T = 18, B = 48;
+  var iw = W - L - R, ih = H - T - B;
+  var steps = [25, 50, 75, 100, 125, 150, 200, 250, 300, 400];
+  var n = m.length;
+  var pts = steps.map(function (t) {
+    var c = 0;
+    m.forEach(function (j) { if (j.util <= t) c++; });
+    return { t: t, pct: n ? (c / n) * 100 : 0, count: c };
+  });
+
+  var x = function (i) { return L + (iw * i) / (steps.length - 1); };
+  var y = function (p) { return T + ih - (ih * p) / 100; };
+
+  var g = "";
+  [0, 25, 50, 75, 100].forEach(function (p) {
+    g += '<line class="grid" x1="' + L + '" y1="' + y(p) + '" x2="' + (W - R) + '" y2="' + y(p) + '"/>' +
+         txt(L - 8, y(p) + 4, p + "%", "tick", "end");
+  });
+
+  var d = pts.map(function (p, i) { return (i ? "L" : "M") + x(i) + " " + y(p.pct); }).join("");
+  var area = "M" + x(0) + " " + y(0) + d.slice(1) + "L" + x(pts.length - 1) + " " + y(0) + "Z";
+
+  // The 100% mark is the whole question: at or under book time.
+  var i100 = steps.indexOf(100);
+  var body =
+    g +
+    '<path class="area" d="' + area + '"/>' +
+    '<line class="refline" x1="' + x(i100) + '" y1="' + T + '" x2="' + x(i100) + '" y2="' + (T + ih) + '"/>' +
+    '<path class="curve" d="' + d + '"/>';
+
+  pts.forEach(function (p, i) {
+    body += '<g class="hit" tabindex="0"><title>' +
+            esc(p.count + " of " + n + " cards took " + p.t + "% of book time or less") +
+            "</title>" +
+            '<circle class="dot" cx="' + x(i) + '" cy="' + y(p.pct) + '" r="4"/>' +
+            '<rect x="' + (x(i) - 14) + '" y="' + T + '" width="28" height="' + ih + '" fill="transparent"/>' +
+            "</g>" +
+            txt(x(i), H - B + 18, p.t + "%", "tick", "middle");
+  });
+
+  // Direct label on the one point that carries the sentence, not on all ten.
+  var at100 = pts[i100];
+  body += txt(x(i100) + 8, y(at100.pct) - 10, Math.round(at100.pct) + "% of cards", "refnote") +
+          txt(x(i100) + 8, y(at100.pct) + 4, "at or under book", "lbl") +
+          '<line class="axis" x1="' + L + '" y1="' + (T + ih) + '" x2="' + (W - R) + '" y2="' + (T + ih) + '"/>' +
+          txt(W - R, H - 8, "actual as a share of book time →", "lbl", "end");
+
+  return el(
+    "<figure>" +
+      '<figcaption><h2>How many cards come in on time</h2>' +
+      '<p class="sub">' + at100.count + " of " + n + " finished at or under the book time. " +
+      "Read up from any point on the bottom axis.</p></figcaption>" +
+      '<div class="plot">' + svg(W, H, body) + "</div>" +
+    "</figure>");
+}
+
+/* 3. Per technician. One hue; the 100% line carries the judgement. */
+function technicianChart(ops) {
+  var shown = ops.filter(function (o) { return o.n >= MIN_CARDS; })
+                 .sort(function (a, b) { return a.util - b.util; });
+  if (!shown.length) return el('<p class="msg">No technician has ' + MIN_CARDS + " finished cards yet.</p>");
+
+  var rowH = 30, L = 150, R = 58, T = 26, B = 34, W = 940;
+  var H = T + B + rowH * shown.length;
+  var iw = W - L - R;
+  var max = Math.max(200, Math.ceil(Math.max.apply(null, shown.map(function (o) { return o.util; })) / 50) * 50);
+  var x = function (v) { return L + (iw * v) / max; };
+
+  var body = "";
+  for (var v = 0; v <= max; v += 50) {
+    body += '<line class="grid" x1="' + x(v) + '" y1="' + T + '" x2="' + x(v) + '" y2="' + (T + rowH * shown.length) + '"/>' +
+            txt(x(v), T - 10, v + "%", "tick", "middle");
+  }
+
+  shown.forEach(function (o, i) {
+    var yy = T + i * rowH;
+    // 2px gap between adjacent bars, so neighbours never merge.
+    body += '<g class="hit" tabindex="0"><title>' +
+            esc(o.name + " — " + Math.round(o.util) + "% of book time across " +
+                o.n + " cards, " + round1(o.actH) + " hours") + "</title>" +
+            hbar(L, yy + 5, Math.max(2, x(o.util) - L), rowH - 12, "bar") +
+            '<rect x="0" y="' + yy + '" width="' + W + '" height="' + rowH + '" fill="transparent"/>' +
+            "</g>" +
+            txt(L - 10, yy + rowH / 2 + 4, o.name, "lbl", "end") +
+            txt(x(o.util) + 7, yy + rowH / 2 + 4, Math.round(o.util) + "%", "val");
+  });
+
+  body += '<line class="refline" x1="' + x(100) + '" y1="' + (T - 4) + '" x2="' + x(100) + '" y2="' + (T + rowH * shown.length) + '"/>' +
+          txt(x(100), T + rowH * shown.length + 20, "book time", "refnote", "middle") +
+          '<line class="axis" x1="' + L + '" y1="' + T + '" x2="' + L + '" y2="' + (T + rowH * shown.length) + '"/>';
+
+  return el(
+    "<figure>" +
+      '<figcaption><h2>Time taken against book, by technician</h2>' +
+      '<p class="sub">Shorter is better. Anyone left of the dashed line is beating the book. ' +
+      "Technicians with fewer than " + MIN_CARDS + " finished cards are in the table below instead " +
+      "&mdash; on one or two cards the percentage swings too far to mean anything.</p></figcaption>" +
+      '<div class="plot">' + svg(W, H, body) + "</div>" +
+    "</figure>");
+}
+
+/* 4. The distribution the sketch asked for, with the tail folded into one
+      band rather than stretching the axis to 1,883%. */
+function spreadChart(m) {
+  var bands = [[0, 50], [50, 75], [75, 100], [100, 125], [125, 150],
+               [150, 200], [200, 300], [300, Infinity]];
+  var counts = bands.map(function (b) {
+    return m.filter(function (j) { return j.util >= b[0] && j.util < b[1]; }).length;
+  });
+  var max = Math.max.apply(null, counts) || 1;
+
+  var W = 940, H = 230, L = 40, R = 18, T = 16, B = 46;
+  var iw = W - L - R, ih = H - T - B;
+  var bw = iw / bands.length;
+
+  var body = "";
+  [0, Math.round(max / 2), max].forEach(function (v) {
+    var yy = T + ih - (ih * v) / max;
+    body += '<line class="grid" x1="' + L + '" y1="' + yy + '" x2="' + (W - R) + '" y2="' + yy + '"/>' +
+            txt(L - 8, yy + 4, v, "tick", "end");
+  });
+
+  counts.forEach(function (c, i) {
+    var h = (ih * c) / max, xx = L + i * bw + 1, yy = T + ih - h;
+    var lab = bands[i][1] === Infinity ? "300%+" : bands[i][0] + "–" + bands[i][1] + "%";
+    body += '<g class="hit" tabindex="0"><title>' + esc(c + " cards took " + lab + " of book time") + "</title>" +
+            vbar(xx, yy, bw - 4, h, "bar") +
+            '<rect x="' + xx + '" y="' + T + '" width="' + (bw - 4) + '" height="' + ih + '" fill="transparent"/>' +
+            "</g>" +
+            (c ? txt(xx + (bw - 4) / 2, yy - 6, c, "val", "middle") : "") +
+            txt(xx + (bw - 4) / 2, H - B + 18, lab, "tick", "middle");
+  });
+
+  var x100 = L + 3 * bw;
+  body += '<line class="refline" x1="' + x100 + '" y1="' + T + '" x2="' + x100 + '" y2="' + (T + ih) + '"/>' +
+          txt(x100 + 6, T + 12, "book time", "refnote") +
+          '<line class="axis" x1="' + L + '" y1="' + (T + ih) + '" x2="' + (W - R) + '" y2="' + (T + ih) + '"/>' +
+          txt(W - R, H - 6, "actual as a share of book time →", "lbl", "end");
+
+  return el(
+    "<figure>" +
+      '<figcaption><h2>Where the cards fall</h2>' +
+      '<p class="sub">Number of cards in each band. The last band holds everything above 300% ' +
+      "&mdash; four cards carry a standard under half an hour, and against those the percentage " +
+      "runs into the thousands without meaning much.</p></figcaption>" +
+      '<div class="plot">' + svg(W, H, body) + "</div>" +
+    "</figure>");
+}
+
+function tableBlock(ops) {
+  var rows = ops.slice().sort(function (a, b) { return b.actH - a.actH; }).map(function (o) {
+    return "<tr><td>" + esc(o.name) + "</td><td>" + round1(o.actH) + "</td><td>" +
+           round1(o.stdH) + "</td><td>" + (o.n >= MIN_CARDS ? Math.round(o.util) + "%" :
+           '<span class="note">too few</span>') + "</td><td>" + o.n + "</td></tr>";
+  }).join("");
+  return el(
+    "<details><summary>Every technician, as a table</summary>" +
+      '<div class="scroll"><table><thead><tr><th>Technician</th><th>Actual hours</th>' +
+      "<th>Standard hours</th><th>Of book</th><th>Cards</th></tr></thead><tbody>" +
+      rows + "</tbody></table></div></details>");
+}
+
+/* ------------------------------ paint ------------------------------ */
+
+function render() {
+  if (!MODEL) return;
+  app.textContent = "";
+
+  var stints = MODEL.stints.filter(function (s) { return inRange(s.day); });
+  var seen = {};
+  stints.forEach(function (s) { seen[s.job.uid] = 1; });
+  var measured = MODEL.jobs.filter(function (j) { return j.ok && seen[j.uid]; });
+
+  var byOp = {};
+  MODEL.operators.forEach(function (o) {
+    byOp[o.uid] = { name: o.name, actH: 0, stdH: 0, cards: {} };
+  });
+  stints.forEach(function (s) {
+    if (!s.op) return;
+    var r = byOp[s.op.uid];
+    if (!r) return;
+    r.actH += s.mins / 60;
+    if (s.job.ok && s.job.actMin > 0) {
+      r.stdH += s.job.stdH * (s.mins / s.job.actMin);
+      r.cards[s.job.uid] = 1;
+    }
+  });
+  var ops = Object.keys(byOp).map(function (k) { return byOp[k]; })
+    .filter(function (o) { return o.actH > 0; })
+    .map(function (o) {
+      o.n = Object.keys(o.cards).length;
+      o.util = o.stdH > 0 ? (o.actH / o.stdH) * 100 : 0;
+      return o;
+    });
+
+  var label = { all: "All dates", today: "Latest day", week: "Last 7 days", month: "Last 30 days" }[RANGE];
+  app.appendChild(el(
+    '<header class="top">' +
+      "<div>" +
+        '<p class="eyebrow">' + esc(DOC_NAME || "Service workshop") + "</p>" +
+        "<h1>Standard hours against actual hours</h1>" +
+        '<p class="sub">' + esc(label) + " · " + measured.length + " cards measured · " +
+          MODEL.jobs.length + " in the document</p>" +
+      "</div>" +
+      '<div class="seg" role="group" aria-label="Period">' +
+        ["today", "week", "month", "all"].map(function (k) {
+          var t = { today: "Latest day", week: "7 days", month: "30 days", all: "All" }[k];
+          return '<button type="button" data-r="' + k + '" aria-pressed="' +
+                 (RANGE === k) + '">' + t + "</button>";
+        }).join("") +
+      "</div>" +
+    "</header>"));
+
+  app.querySelector(".seg").addEventListener("click", function (ev) {
+    var b = ev.target.closest("button[data-r]");
+    if (!b) return;
+    RANGE = b.getAttribute("data-r");
+    render();
+  });
+
+  if (!measured.length) {
+    app.appendChild(el('<p class="msg">No card in this period can be compared yet. ' +
+      "A card counts once it has a standard under 24 hours, some time booked against it, " +
+      "and no single stint longer than twelve hours.</p>"));
+    return;
+  }
+
+  app.appendChild(heroBlock(measured));
+  app.appendChild(cumulativeChart(measured));
+  app.appendChild(technicianChart(ops));
+  app.appendChild(spreadChart(measured));
+  app.appendChild(tableBlock(ops));
+}
+
+/* ------------------------------ boot ------------------------------ */
+
+/**
+ * The Grist origin, from the browser rather than from anything in the frame.
+ * `ancestorOrigins` is the parent chain the browser itself vouches for; the
+ * referrer is the fallback. Neither can be spoofed by this page.
+ */
+function gristOrigin() {
+  try {
+    var a = window.location.ancestorOrigins;
+    if (a && a.length) return a[a.length - 1];
+  } catch (err) { /* not supported */ }
+  if (document.referrer) {
+    try { return new URL(document.referrer).origin; } catch (err) { /* malformed */ }
+  }
+  return null;
+}
+
+function load() {
+  if (grist.docApi.getDocName) {
+    grist.docApi.getDocName().then(function (n) { DOC_NAME = n || ""; }).catch(function () {});
+  }
+  Promise.all([
+    grist.docApi.fetchTable("Jobs"),
+    grist.docApi.fetchTable("Assignments"),
+    grist.docApi.fetchTable("Operators"),
+  ]).then(function (t) {
+    MODEL = build({ jobs: toRows(t[0]), assignments: toRows(t[1]), operators: toRows(t[2]) });
+    render();
+  }).catch(function (err) {
+    fail("Could not read the document: " + (err && err.message ? err.message : err) +
+         ". This widget needs Full access — set it in the widget panel on the right.");
+  });
+}
+
+(function start() {
+  var origin = gristOrigin();
+  if (!origin) {
+    fail("This page is a Grist widget and has to run inside a Grist document. " +
+         "Add it with Add Widget → Custom → Custom URL.");
+    return;
+  }
+  var tag = document.createElement("script");
+  tag.src = origin + "/grist-plugin-api.js";
+  tag.onload = function () {
+    grist.ready({ requiredAccess: "full" });
+    grist.onRecords(function () { load(); });
+    load();
+    setInterval(load, 60000);
+  };
+  tag.onerror = function () { fail("Could not load the Grist plugin API from " + origin + "."); };
+  document.head.appendChild(tag);
+})();
+</script>
