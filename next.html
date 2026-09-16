@@ -153,6 +153,49 @@
 
   .msg { padding: 18px; border: 1px solid var(--rule); border-radius: 10px;
          color: var(--text-2); font-size: 13px; }
+
+  /* ---- the card detail, at the side ---- */
+  .scrim {
+    position: fixed; inset: 0; background: #0b0b0b; opacity: .28;
+    border: 0; padding: 0; margin: 0; cursor: pointer;
+  }
+  .drawer {
+    position: fixed; top: 0; right: 0; bottom: 0; width: min(430px, 100%);
+    background: var(--surface); border-left: 1px solid var(--rule);
+    padding: 18px 20px 28px; overflow-y: auto;
+    display: grid; gap: 16px; align-content: start;
+    box-shadow: -14px 0 34px rgba(0,0,0,.14);
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .drawer { animation: slide .16s ease-out; }
+    @keyframes slide { from { transform: translateX(14px); opacity: .4; } }
+  }
+  .drawer .head { display: flex; gap: 12px; align-items: flex-start;
+                  justify-content: space-between; }
+  .drawer .reg { font-size: 22px; font-weight: 650; letter-spacing: -.01em; }
+  .drawer .code { font-size: 12px; color: var(--text-3); }
+  .drawer .job { font-size: 13px; color: var(--text-2); }
+  .drawer .x {
+    font: inherit; font-size: 20px; line-height: 1; border: 0; cursor: pointer;
+    background: var(--surface-sunk); color: var(--text-2);
+    width: 30px; height: 30px; border-radius: 8px; flex: none;
+  }
+  .drawer .x:focus-visible { outline: 2px solid var(--mark); outline-offset: 2px; }
+  .figs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .fig { background: var(--surface-sunk); border-radius: 9px; padding: 9px 11px; }
+  .fig .k { font-size: 10px; letter-spacing: .07em; text-transform: uppercase;
+            color: var(--text-3); }
+  .fig .v { font-size: 17px; font-weight: 650; }
+  .facts { display: grid; gap: 5px; font-size: 12.5px; }
+  .facts div { display: flex; justify-content: space-between; gap: 14px;
+               border-bottom: 1px solid var(--rule); padding-bottom: 4px; }
+  .facts span:first-child { color: var(--text-3); }
+  .drawer h3 { font-size: 12px; letter-spacing: .06em; text-transform: uppercase;
+               color: var(--text-3); margin: 4px 0 0; font-weight: 600; }
+  .drawer table { font-size: 12.5px; }
+  .drawer td, .drawer th { padding: 5px 6px; }
+  .why { color: var(--text-3); font-size: 11.5px; }
+  .clickable .dot, .clickable .bar { cursor: pointer; }
 </style>
 
 <div class="wrap" id="app"></div>
@@ -227,6 +270,9 @@ function build(raw) {
       uid: j.uid, car: j.subjectLabel || j.externalId || j.uid,
       code: j.externalId || "", title: j.title || "",
       stdH: (stdMin || 0) / 60, actMin: 0, stints: [], lifecycle: j.lifecycle,
+      portalStatus: j.portalStatus || "", portalSubStatus: j.portalSubStatus || "",
+      km: j.mileageKm, promised: j.promisedAt || "", line: j.portalLine || "",
+      overridden: j.allottedMinutesOverride != null,
     };
   });
 
@@ -237,7 +283,8 @@ function build(raw) {
     if (!isFinite(s) || !isFinite(e)) return;
     var mins = (e - s) / MS_MIN;
     if (!(mins > 0)) return;
-    var st = { job: j, op: ops[a.operatorId] || null, mins: mins, day: istDay(s), start: s };
+    var st = { job: j, op: ops[a.operatorId] || null, mins: mins, day: istDay(s),
+               start: s, end: e, why: a.endReason || "" };
     j.actMin += mins;
     j.stints.push(st);
     stints.push(st);
@@ -308,6 +355,113 @@ function hbar(x, y, w, h, cls) {
          "a" + r + " " + r + " 0 0 1 " + r + " " + r + "v" + (h - 2 * r) +
          "a" + r + " " + r + " 0 0 1 " + -r + " " + r + "H" + x + 'Z"/>';
 }
+
+
+/* ------------------------------ card detail ------------------------------ */
+
+/**
+ * Everything the document holds about one card, at the side.
+ *
+ * The labour LINES are deliberately absent: the extension stores a card's
+ * lines summed into one standard and their descriptions joined into one title
+ * ("MAJOR SERVICE +4 more"), so the individual lines are in the portal and
+ * not here. What IS here, and is the thing nobody could see before, is who
+ * worked the car and what interrupted them -- which is what turns "9.8 hours
+ * against 2.5" into an account of a day.
+ */
+var HHMM = function (ms) {
+  return new Date(ms + IST_OFFSET_MIN * MS_MIN).toISOString().slice(11, 16);
+};
+var DAY = function (ms) {
+  var d = new Date(ms + IST_OFFSET_MIN * MS_MIN);
+  return d.toISOString().slice(8, 10) + " " +
+         ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][d.getUTCMonth()];
+};
+var WHY = {
+  moved: "moved to another car", paused: "paused", lunch: "lunch",
+  shift_end: "end of shift", completed: "job finished",
+};
+
+function closeDrawer() {
+  var d = document.getElementById("drawer");
+  var s = document.getElementById("scrim");
+  if (d) d.remove();
+  if (s) s.remove();
+  if (OPENER && document.contains(OPENER)) OPENER.focus();
+  OPENER = null;
+}
+var OPENER = null;
+
+function openCard(job, opener) {
+  closeDrawer();
+  OPENER = opener || null;
+
+  var pct = job.stdH > 0 ? Math.round((job.actH / job.stdH) * 100) : null;
+  var over = job.actH - job.stdH;
+  var stints = job.stints.slice().sort(function (a, b) { return a.start - b.start; });
+
+  var rows = stints.map(function (st) {
+    return "<tr><td>" + esc(st.op ? st.op.name : "—") + "</td>" +
+           "<td>" + esc(DAY(st.start)) + "</td>" +
+           "<td>" + esc(HHMM(st.start) + "–" + HHMM(st.end)) + "</td>" +
+           "<td>" + Math.round(st.mins) + "m</td>" +
+           '<td class="why">' + esc(WHY[st.why] || st.why || "") + "</td></tr>";
+  }).join("");
+
+  var fact = function (k, v) {
+    return v === null || v === undefined || v === "" ? "" :
+      "<div><span>" + esc(k) + "</span><span>" + esc(v) + "</span></div>";
+  };
+
+  var scrim = el('<button class="scrim" id="scrim" aria-label="Close"></button>');
+  var d = el(
+    '<aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-label="Job card detail" tabindex="-1">' +
+      '<div class="head"><div>' +
+        '<div class="reg">' + esc(job.car) + "</div>" +
+        '<div class="code">' + esc(job.code) + "</div>" +
+      "</div>" +
+      '<button class="x" type="button" aria-label="Close">&times;</button></div>' +
+
+      '<p class="job">' + esc(job.title || "—") + "</p>" +
+
+      '<div class="figs">' +
+        '<div class="fig"><div class="k">Standard</div><div class="v">' + round1(job.stdH) + " h</div></div>" +
+        '<div class="fig"><div class="k">Actual</div><div class="v">' + round1(job.actH) + " h</div></div>" +
+        '<div class="fig"><div class="k">Of book</div><div class="v">' +
+          (pct === null ? "—" : pct + "%") + "</div></div>" +
+      "</div>" +
+
+      '<div class="facts">' +
+        fact(over >= 0 ? "Over book by" : "Under book by", round1(Math.abs(over)) + " hours") +
+        fact("Technicians", Object.keys(stints.reduce(function (a, s) {
+          if (s.op) a[s.op.name] = 1; return a; }, {})).length) +
+        fact("Times picked up", stints.length) +
+        fact("In our system", job.lifecycle === "completed" ? "completed" : "open") +
+        fact("In the portal", [job.portalStatus, job.portalSubStatus]
+          .filter(Boolean).join(" / ")) +
+        fact("Odometer", job.km ? Number(job.km).toLocaleString("en-IN") + " km" : "") +
+        fact("Portal", job.line === "ev" ? "electric" : job.line === "pv" ? "petrol / diesel" : "") +
+        fact("Allotted time", job.overridden ? "corrected by hand" : "as imported") +
+      "</div>" +
+
+      "<h3>Who worked on it</h3>" +
+      (rows
+        ? '<div class="scroll"><table><thead><tr><th>Technician</th><th>Day</th>' +
+          "<th>Time</th><th>For</th><th>Then</th></tr></thead><tbody>" + rows +
+          "</tbody></table></div>"
+        : '<p class="note">Nobody has been clocked on to this card.</p>') +
+    "</aside>");
+
+  document.body.appendChild(scrim);
+  document.body.appendChild(d);
+  scrim.addEventListener("click", closeDrawer);
+  d.querySelector(".x").addEventListener("click", closeDrawer);
+  d.focus();
+}
+
+document.addEventListener("keydown", function (ev) {
+  if (ev.key === "Escape") closeDrawer();
+});
 
 /* ------------------------------ charts ------------------------------ */
 
@@ -390,9 +544,9 @@ function cumulativeChart(m) {
 
   body += '<path class="curve" d="' + d + '" style="opacity:.45"/>';
 
-  pts.forEach(function (p) {
+  pts.forEach(function (p, i) {
     var j = p.j;
-    body += '<g class="hit" tabindex="0"><title>' +
+    body += '<g class="hit clickable" tabindex="0" role="button" data-card="' + i + '"><title>' +
             esc(j.car + "  —  " + Math.round(j.util) + "% of book time\n" +
                 "Standard " + round1(j.stdH) + " h    Actual " + round1(j.actH) + " h\n" +
                 (j.title ? j.title + "\n" : "") + j.code) +
@@ -413,7 +567,7 @@ function cumulativeChart(m) {
           txt(W - R, H - 8, "slowest", "tick", "end") +
           txt(L + iw / 2, H - 8, n + " job cards · hover any dot for the vehicle", "lbl", "middle");
 
-  return el(
+  var fig = el(
     "<figure>" +
       '<figcaption><h2>Every job card, fastest to slowest</h2>' +
       '<p class="sub">One dot per card. Everything below the dashed line came in at or under ' +
@@ -423,6 +577,19 @@ function cumulativeChart(m) {
       "</p></figcaption>" +
       '<div class="plot">' + svg(W, H, body) + "</div>" +
     "</figure>");
+
+  // One listener for every dot: the mark carries its index, the panel reads
+  // the card out of `sorted`.
+  var pick = function (ev) {
+    var g = ev.target.closest("g[data-card]");
+    if (!g) return;
+    if (ev.type === "keydown" && ev.key !== "Enter" && ev.key !== " ") return;
+    if (ev.type === "keydown") ev.preventDefault();
+    openCard(sorted[Number(g.getAttribute("data-card"))], g);
+  };
+  fig.addEventListener("click", pick);
+  fig.addEventListener("keydown", pick);
+  return fig;
 }
 
 /* 3. Per technician. One hue; the 100% line carries the judgement. */
