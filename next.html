@@ -134,6 +134,10 @@
               stroke-linejoin: round; stroke-linecap: round; }
   .area     { fill: var(--mark); opacity: .12; }
   .dot      { fill: var(--mark); stroke: var(--surface); stroke-width: 2; }
+  /* Past the axis cap: hollow, so a dot pinned to the edge is never mistaken
+     for one that genuinely landed at 300%. */
+  .dot-over { fill: var(--surface); stroke: var(--mark); }
+  g.hit:hover .dot, g.hit:focus-visible .dot { fill: var(--text); stroke: var(--surface); }
   g.hit:hover .bar, g.hit:focus-visible .bar { fill: var(--text); }
   g.hit { cursor: default; }
   g.hit:focus-visible { outline: 2px solid var(--mark); outline-offset: 2px; }
@@ -343,61 +347,80 @@ function heroBlock(m) {
     "</section>");
 }
 
-/* 2. Cumulative -- the share of cards at or under each level. Outlier-proof:
-      one absurd card moves the curve by 1/n, not by its own magnitude. */
+/* 2. One dot per job card, ordered by how it did.
+ *
+ * Sorting the cards by their percentage and plotting each at its own rank
+ * gives the cumulative curve AND a mark per card at the same time -- the
+ * shape answers "how many came in on time", and every dot on it is a real
+ * vehicle you can hover to name. No binning, so nothing is hidden inside a
+ * bar, and one absurd card moves the line by 1/n rather than by its own size.
+ *
+ * The axis stops at 300%. Cards past it are drawn hollow on the edge with
+ * their true figure in the tooltip -- stretching to 1,883% to fit four cards
+ * would squash the other 147 into the left eighth of the chart.
+ */
+var Y_CAP = 300;
+
 function cumulativeChart(m) {
-  var W = 940, H = 300, L = 46, R = 22, T = 18, B = 48;
+  var W = 940, H = 330, L = 50, R = 120, T = 18, B = 46;
   var iw = W - L - R, ih = H - T - B;
-  var steps = [25, 50, 75, 100, 125, 150, 200, 250, 300, 400];
   var n = m.length;
-  var pts = steps.map(function (t) {
-    var c = 0;
-    m.forEach(function (j) { if (j.util <= t) c++; });
-    return { t: t, pct: n ? (c / n) * 100 : 0, count: c };
+
+  // Rank across the bottom, not the percentage: plotting the percentage put
+  // every card past the cap on the same x and they stacked into a solid bar
+  // at the right edge, twenty-three of them hidden behind each other. One
+  // slot per card means no dot can ever cover another.
+  var sorted = m.slice().sort(function (a, b) { return a.util - b.util; });
+  var x = function (i) { return L + (iw * i) / Math.max(1, n - 1); };
+  var y = function (u) { return T + ih - (ih * Math.min(u, Y_CAP)) / Y_CAP; };
+
+  var body = "";
+  [0, 50, 100, 150, 200, 250, 300].forEach(function (u) {
+    body += '<line class="grid" x1="' + L + '" y1="' + y(u) + '" x2="' + (W - R) + '" y2="' + y(u) + '"/>' +
+            txt(L - 8, y(u) + 4, u + "%" + (u === Y_CAP ? "+" : ""), "tick", "end");
   });
 
-  var x = function (i) { return L + (iw * i) / (steps.length - 1); };
-  var y = function (p) { return T + ih - (ih * p) / 100; };
-
-  var g = "";
-  [0, 25, 50, 75, 100].forEach(function (p) {
-    g += '<line class="grid" x1="' + L + '" y1="' + y(p) + '" x2="' + (W - R) + '" y2="' + y(p) + '"/>' +
-         txt(L - 8, y(p) + 4, p + "%", "tick", "end");
+  var pts = sorted.map(function (j, i) {
+    return { j: j, cx: x(i), cy: y(j.util), over: j.util > Y_CAP };
   });
 
-  var d = pts.map(function (p, i) { return (i ? "L" : "M") + x(i) + " " + y(p.pct); }).join("");
-  var area = "M" + x(0) + " " + y(0) + d.slice(1) + "L" + x(pts.length - 1) + " " + y(0) + "Z";
+  var d = pts.map(function (p, i) { return (i ? "L" : "M") + round1(p.cx) + " " + round1(p.cy); }).join("");
+  var under = sorted.filter(function (j) { return j.util <= 100; }).length;
+  var beyond = sorted.filter(function (j) { return j.util > Y_CAP; }).length;
 
-  // The 100% mark is the whole question: at or under book time.
-  var i100 = steps.indexOf(100);
-  var body =
-    g +
-    '<path class="area" d="' + area + '"/>' +
-    '<line class="refline" x1="' + x(i100) + '" y1="' + T + '" x2="' + x(i100) + '" y2="' + (T + ih) + '"/>' +
-    '<path class="curve" d="' + d + '"/>';
+  body += '<path class="curve" d="' + d + '" style="opacity:.45"/>';
 
-  pts.forEach(function (p, i) {
+  pts.forEach(function (p) {
+    var j = p.j;
     body += '<g class="hit" tabindex="0"><title>' +
-            esc(p.count + " of " + n + " cards took " + p.t + "% of book time or less") +
+            esc(j.car + "  —  " + Math.round(j.util) + "% of book time\n" +
+                "Standard " + round1(j.stdH) + " h    Actual " + round1(j.actH) + " h\n" +
+                (j.title ? j.title + "\n" : "") + j.code) +
             "</title>" +
-            '<circle class="dot" cx="' + x(i) + '" cy="' + y(p.pct) + '" r="4"/>' +
-            '<rect x="' + (x(i) - 14) + '" y="' + T + '" width="28" height="' + ih + '" fill="transparent"/>' +
-            "</g>" +
-            txt(x(i), H - B + 18, p.t + "%", "tick", "middle");
+            '<circle class="dot' + (p.over ? " dot-over" : "") + '" cx="' + round1(p.cx) +
+            '" cy="' + round1(p.cy) + '" r="4.5"/>' +
+            '<rect x="' + round1(p.cx - 5) + '" y="' + T + '" width="10" height="' + ih +
+            '" fill="transparent"/></g>';
   });
 
-  // Direct label on the one point that carries the sentence, not on all ten.
-  var at100 = pts[i100];
-  body += txt(x(i100) + 8, y(at100.pct) - 10, Math.round(at100.pct) + "% of cards", "refnote") +
-          txt(x(i100) + 8, y(at100.pct) + 4, "at or under book", "lbl") +
+  // The book-time line, labelled out in the right margin so it never sits on
+  // top of the marks it is there to explain.
+  body += '<line class="refline" x1="' + L + '" y1="' + y(100) + '" x2="' + (W - R + 6) + '" y2="' + y(100) + '"/>' +
+          txt(W - R + 12, y(100) - 4, "book time", "refnote") +
+          txt(W - R + 12, y(100) + 12, under + " of " + n + " at or below", "lbl") +
           '<line class="axis" x1="' + L + '" y1="' + (T + ih) + '" x2="' + (W - R) + '" y2="' + (T + ih) + '"/>' +
-          txt(W - R, H - 8, "actual as a share of book time →", "lbl", "end");
+          txt(L, H - 8, "fastest", "tick") +
+          txt(W - R, H - 8, "slowest", "tick", "end") +
+          txt(L + iw / 2, H - 8, n + " job cards · hover any dot for the vehicle", "lbl", "middle");
 
   return el(
     "<figure>" +
-      '<figcaption><h2>How many cards come in on time</h2>' +
-      '<p class="sub">' + at100.count + " of " + n + " finished at or under the book time. " +
-      "Read up from any point on the bottom axis.</p></figcaption>" +
+      '<figcaption><h2>Every job card, fastest to slowest</h2>' +
+      '<p class="sub">One dot per card. Everything below the dashed line came in at or under ' +
+      "the book time — " + under + " of " + n + "." +
+      (beyond ? " " + beyond + " card" + (beyond > 1 ? "s run" : " runs") + " past " + Y_CAP +
+                "% and sit hollow on the top line; hover for the real figure." : "") +
+      "</p></figcaption>" +
       '<div class="plot">' + svg(W, H, body) + "</div>" +
     "</figure>");
 }
